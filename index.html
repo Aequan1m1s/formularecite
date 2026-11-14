@@ -17,10 +17,37 @@
     window.deferredPrompt = null;
 
     if ('serviceWorker' in navigator) {
+      // 记录进入页面时是否已被 SW 接管：首装不触发刷新，只有“更新”才刷新
+      var hadController = !!navigator.serviceWorker.controller;
+      var reloading = false;
+
+      // 新 SW 接管后自动刷新一次，用户无需手动清缓存
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (!hadController || reloading) return;
+        reloading = true;
+        window.location.reload();
+      });
+
       window.addEventListener('load', function () {
-        navigator.serviceWorker.register('./sw.js').catch(function (err) {
-          console.warn('[pwa] Service Worker 注册失败：', err);
-        });
+        navigator.serviceWorker
+          .register('./sw.js', { updateViaCache: 'none' })
+          .then(function (registration) {
+            // 立即检查一次是否有新版本（绕过浏览器默认的 24h 限制）
+            registration.update().catch(function () {});
+
+            // 页面重新可见、以及每 30 分钟各检查一次，长时间挂着的 PWA 也能拿到更新
+            document.addEventListener('visibilitychange', function () {
+              if (document.visibilityState === 'visible') {
+                registration.update().catch(function () {});
+              }
+            });
+            setInterval(function () {
+              registration.update().catch(function () {});
+            }, 30 * 60 * 1000);
+          })
+          .catch(function (err) {
+            console.warn('[pwa] Service Worker 注册失败：', err);
+          });
       });
     }
 
