@@ -1,0 +1,7 @@
+exclude:
+  - docs/待确认清单.md
+  - docs/老写法替换日志.md
+  - docs/考研数学公式合并.md
+  - _work
+  - .screenshots
+  - .trae-html-share-packages
