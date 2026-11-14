@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1f2a44" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>背公式</title>
+
+  <!-- PWA：可安装到安卓桌面 -->
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+
+  <!-- Service Worker 注册 + 安装事件捕获（deferredPrompt 全局备用） -->
+  <script>
+    window.deferredPrompt = null;
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js').catch(function (err) {
+          console.warn('[pwa] Service Worker 注册失败：', err);
+        });
+      });
+    }
+
+    // 安卓 Chrome 触发安装条件时，暂存事件，供首页按钮调用
+    window.addEventListener('beforeinstallprompt', function (event) {
+      event.preventDefault();
+      window.deferredPrompt = event;
+      window.dispatchEvent(new Event('installpromptready'));
+    });
+
+    // 安装完成后清空并通知页面
+    window.addEventListener('appinstalled', function () {
+      window.deferredPrompt = null;
+      window.dispatchEvent(new Event('appinstalled'));
+    });
+  </script>
+
+  <!-- KaTeX：渲染公式（离线可换成本地文件） -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #f5f6fa;
+      --card-bg: #ffffff;
+      --text: #1f2430;
+      --sub: #6b7280;
+      --line: #e6e8ef;
+      --accent: #3b82f6;
+      --forgot: #ef4444;
+      --hard: #f59e0b;
+      --easy: #10b981;
+      --radius: 18px;
+      --ease: cubic-bezier(.32, .72, 0, 1);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: linear-gradient(180deg, #eef2ff 0%, var(--bg) 30%, var(--bg) 100%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+
+    /* ============ 视图容器与左右滑动过渡 ============ */
+    .app {
+      position: relative;
+      width: 100%;
+      height: 100dvh;
+      overflow: hidden;
+    }
+
+    .view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 16px calc(14px + env(safe-area-inset-bottom));
+      gap: 14px;
+      /* 默认停在右侧（未激活） */
+      transform: translateX(100%);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform .34s var(--ease), opacity .34s var(--ease);
+      will-change: transform;
+    }
+
+    .view.is-active {
+      transform: translateX(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* 向左退出时的停顿位置，形成层次感 */
+    .view.is-left {
+      transform: translateX(-26%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .view.no-anim { transition: none !important; }
+
+    /* ============ 通用头部 ============ */
+    .view-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+    }
+
+    .view-head .titles { flex: 1; min-width: 0; }
+
+    .view-head h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: .5px;
+    }
+
+    .view-head h2 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .view-head .sub {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: var(--sub);
+    }
+
+    .icon-btn {
+      flex: 0 0 auto;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .8);
+      color: var(--text);
+      font-size: 17px;
+      cursor: pointer;
+      transition: transform .12s ease, background .2s ease;
+    }
+
+    .icon-btn:active { transform: scale(.94); }
+
+    /* ============ 可滚动区域 ============ */
+    .scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 8px;
+    }
+
+    /* ============ 视图A：科目列表 ============ */
+    .subject-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .subject-card {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+      padding: 18px 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      box-shadow: 0 8px 22px rgba(31, 36, 48, .06);
+      cursor: pointer;
+      text-align: left;
+      font-family: inherit;
+      color: inherit;
+      transition: transform .14s ease, box-shadow .2s ease;
+      overflow: hidden;
+    }
+
+    .subject-card:active { transform: scale(.985); }
+
+    .subject-card::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      background: var(--accent);
+      opacity: .9;
+    }
+
+    .subject-card .s-name {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .subject-card .s-meta {
+      font-size: 12px;
+      color: var(--sub);
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .subject-card .s-meta b { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .subject-card .s-meta .done { color: var(--easy); }
+
+    .subject-card .chev {
+      color: #c3c8d4;
+      font-size: 18px;
+      flex: 0 0 auto;
+    }
+
+    /* 首页底部：安装入口 + 重置进度 */
+    .home-footer {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 16px;
+      padding-bottom: 10px;
+    }
+
+    .install-btn {
+      flex: 1;
+      min-width: 0;
+      padding: 13px 12px;
+      border: none;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #1f2a44, #3b82f6);
+      color: #fff;
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 8px 20px rgba(31, 42, 68, .22);
+      transition: transform .12s ease;
+    }
+
+    .install-btn:active { transform: scale(.985); }
+
+    .reset-link {
+      flex: 0 0 auto;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .85);
+      color: #8b93a3;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    /* ============ 视图B：小节列表 ============ */
+    .section-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .section-item {
+      padding: 14px 14px 12px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--card-bg);
+      box-shadow: 0 6px 18px rgba(31, 36, 48, .05);
+    }
+
+    .section-top {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .section-name {
+      flex: 1;
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .due-badge {
+      flex: 0 0 auto;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: rgba(59, 130, 246, .1);
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .due-badge.is-zero {
+      background: #e7f8f1;
+      color: #0f9d76;
+    }
+
+    /* 已完成小节：名称置灰 */
+    .section-name.is-zero { color: #a7adba; }
+
+    .btn-review {
+      width: 100%;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px;
+      border-radius: 12px;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      transition: transform .12s ease, opacity .2s ease;
+    }
+
+    .btn-review:active { transform: scale(.985); }
+    .btn-review.is-zero { background: #eef1f7; color: var(--sub); }
+
+    /* ============ 视图C：闪卡 ============ */
+    .card-scene {
+      flex: 1;
+      min-height: 0;
+      perspective: 1400px;
+      padding: 2px;
+    }
+
+    .card-inner {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      transform-style: preserve-3d;
+      transition: transform .55s cubic-bezier(.4, .2, .2, 1);
+      cursor: pointer;
+    }
+
+    .card-inner.is-flipped { transform: rotateY(180deg); }
+
+    .card-face {
+      position: absolute;
+      inset: 0;
+      -webkit-backface-visibility: hidden;
+      backface-visibility: hidden;
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      border: 1px solid var(--line);
+      box-shadow: 0 10px 30px rgba(31, 36, 48, .08), 0 2px 6px rgba(31, 36, 48, .05);
+      padding: 20px 18px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .card-back {
+      transform: rotateY(180deg);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .card-front { justify-content: center; align-items: center; text-align: center; gap: 14px; }
+
+    .tag {
+      font-size: 12px;
+      color: var(--accent);
+      background: rgba(59, 130, 246, .09);
+      border-radius: 999px;
+      padding: 4px 12px;
+      max-width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card-front .name {
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .hint {
+      position: absolute;
+      bottom: 16px;
+      font-size: 12px;
+      color: var(--sub);
+    }
+
+    .formula {
+      flex: 0 0 auto;
+      font-size: 17px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 2px 2px 10px;
+    }
+
+    .formula .katex-display { margin: 0; }
+
+    .formula pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+      font-size: 13px;
+      color: #374151;
+    }
+
+    .meta {
+      border-top: 1px dashed var(--line);
+      padding-top: 10px;
+      margin-top: 8px;
+      font-size: 13px;
+      line-height: 1.7;
+      color: #374151;
+    }
+
+    .meta:empty { display: none; }
+    .meta .row + .row { margin-top: 8px; }
+
+    .meta .k {
+      display: inline-block;
+      min-width: 34px;
+      color: var(--sub);
+      font-size: 12px;
+      margin-right: 6px;
+    }
+
+    .actions {
+      flex: 0 0 auto;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .actions button {
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 600;
+      border: none;
+      border-radius: 14px;
+      padding: 14px 6px;
+      color: #fff;
+      cursor: pointer;
+      transition: transform .12s ease, opacity .2s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .actions button:active { transform: scale(.97); }
+    .actions button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .btn-forgot { background: var(--forgot); }
+    .btn-hard { background: var(--hard); }
+    .btn-easy { background: var(--easy); }
+
+    /* 底部进度 */
+    .progress {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--sub);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .progress-track {
+      flex: 1;
+      height: 5px;
+      border-radius: 999px;
+      background: #e3e7ef;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0;
+      border-radius: 999px;
+      background: var(--accent);
+      transition: width .3s var(--ease);
+    }
+
+    /* ============ 结算 / 提示 ============ */
+    .panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      text-align: center;
+      background: var(--card-bg);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: 0 10px 30px rgba(31, 36, 48, .06);
+      padding: 28px 22px;
+    }
+
+    .panel .big { font-size: 38px; }
+    .panel .title { font-size: 19px; font-weight: 700; }
+    .panel .desc { font-size: 13px; color: var(--sub); line-height: 1.7; }
+
+    /* 主按钮（结算页） */
+    .btn-primary {
+      margin-top: 8px;
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 12px 26px;
+      border: none;
+      border-radius: 14px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: calc(40px + env(safe-area-inset-bottom));
+      transform: translate(-50%, 12px);
+      background: rgba(31, 36, 48, .9);
+      color: #fff;
+      font-size: 13px;
+      padding: 10px 16px;
+      border-radius: 999px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .22s ease, transform .22s ease;
+      z-index: 20;
+      max-width: 82vw;
+      text-align: center;
+    }
+
+    .toast.is-show { opacity: 1; transform: translate(-50%, 0); }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 400px) {
+      .card-front .name { font-size: 21px; }
+      .actions button { font-size: 14px; padding: 12px 4px; }
+      .view-head h1 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+
+    <!-- ========== 视图 A：首页 / 科目 ========== -->
+    <section class="view is-active" id="view-home">
+      <header class="view-head">
+        <div class="titles">
+          <h1>背公式</h1>
+          <p class="sub">今日待复习 <b id="home-due">0</b> 张 · 共 <span id="home-total">0</span> 张</p>
+        </div>
+      </header>
+      <div class="scroll">
+        <ul class="subject-list" id="subject-list"></ul>
+        <div class="home-footer">
+          <button class="install-btn hidden" id="btn-install" type="button">📲 安装到桌面</button>
+          <button class="reset-link" id="btn-reset" type="button">重置进度</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 视图 B：小节列表 ========== -->
+    <section class="view" id="view-sections">
+      <header class="view-head">
+        <button class="icon-btn" id="sections-back" aria-label="返回">←</button>
+        <div class="titles">
+          <h2 id="sections-title">科目</h2>
+          <p class="sub" id="sections-sub">今日待复习 0 张</p>
+        </div>
+      </header>
+      <div class="scroll">
+        <ul class="section-list" id="section-list"></ul>
+      </div>
+    </section>
+
+    <!-- ========== 视图 C：闪卡学习 ========== -->
+    <section class="view" id="view-cards">
+      <header class="view-head">
+        <div class="titles">
+          <h2 id="cards-title">小节</h2>
+          <p class="sub" id="cards-sub">—</p>
+        </div>
+        <button class="icon-btn" id="cards-back" aria-label="返回">×</button>
+      </header>
+
+      <div class="card-scene" id="card-scene">
+        <div class="card-inner" id="card-inner">
+          <div class="card-face card-front">
+            <div class="tag" id="card-tag"></div>
+            <div class="name" id="card-name"></div>
+            <div class="hint">👆 点击翻转查看公式</div>
+          </div>
+          <div class="card-face card-back">
+            <div class="formula" id="card-formula"></div>
+            <div class="meta" id="card-meta"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions" id="actions">
+        <button class="btn-forgot" id="btn-forgot">没想起来</button>
+        <button class="btn-hard" id="btn-hard">勉强记得</button>
+        <button class="btn-easy" id="btn-easy">秒出结果</button>
+      </div>
+
+      <div class="progress" id="progress">
+        <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+        <span id="progress-text">0 / 0</span>
+      </div>
+
+      <!-- 单元结算 -->
+      <div class="panel hidden" id="finish-panel">
+        <div class="big">🎉</div>
+        <div class="title">恭喜完成</div>
+        <div class="desc" id="finish-desc">本单元今日的卡片已全部复习。</div>
+        <button class="btn-primary" id="btn-finish-back">返回小节列表</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

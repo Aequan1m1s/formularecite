@@ -1,0 +1,26 @@
+{
+  "name": "背公式",
+  "short_name": "背公式",
+  "description": "考研数学公式卡 · 2-7-14 阶梯记忆",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f7fe",
+  "theme_color": "#1f2a44",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
